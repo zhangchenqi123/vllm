@@ -89,7 +89,8 @@ class CacheEngine:
             # when entry_shape is higher than 1D
             kv_cache.append(layer_kv_cache)
         return kv_cache
-
+    
+    # 把某一层的kv cache从cpu搬运到gpu
     def swap_in(self, src_to_dst: torch.Tensor) -> None:
         for i in range(self.num_attention_layers):
             self.attn_backend.swap_blocks(self.cpu_cache[i], self.gpu_cache[i],
@@ -114,18 +115,27 @@ class CacheEngine:
         num_attention_layers = model_config.get_num_layers_by_block_type(
             parallel_config, LayerBlockType.attention)
 
+        # kv cache的精度
         if cache_config.cache_dtype == "auto":
             dtype = model_config.dtype
         else:
             dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_config.cache_dtype]
 
+        # head_size 是一个头的维度，head_size = hidden_size / num_heads
+        # 对与每个token的每一层，求k向量的大小
+        # 一个k_cache_entry其实就是一个一维向量，他的长度等于把所有头拼接起来
         key_cache_entry = num_heads * head_size
 
+        # 考虑deepseek的MLA时，没有v向量
         # For MLA there is no value cache, since the latent vector
         # is joint keys and values.
         value_cache_entry = key_cache_entry if not model_config.use_mla else 0
+        
+        # 每个attention层要为每个token分配一个kv cache，
         total = num_attention_layers * cache_config.block_size * \
             (key_cache_entry + value_cache_entry)
 
         dtype_size = get_dtype_size(dtype)
         return dtype_size * total
+    
+    # cache_block_size_in_bytes = dtype_size * num_attention_layers * block_size * (num_heads * head_size * [1 or 2])
